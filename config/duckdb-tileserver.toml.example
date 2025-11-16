@@ -1,0 +1,91 @@
+[Server]
+# Accept connections on this subnet (default accepts on all)
+HttpHost = "0.0.0.0"
+
+# IP ports to listen on
+HttpPort = 9000
+# HttpsPort = 9001
+
+# HTTPS configuration - TLS server certificate full chain and key
+# If these are not specified, the TLS server will not be started
+# TlsServerCertificateFile = ""
+# TlsServerPrivateKeyFile = ""
+
+# Advertise URLs relative to this server name and path
+# The default is to look this up from incoming request headers
+# Note: do not add a trailing slash.
+# UrlBase = "http://localhost:9000"
+
+# Optional path to add to the service base URL
+# If set, all routes will be prefixed with this path
+# (e.g. "/tiles", "/services/tiles", etc.)
+# Note: No trailing slash is necessary, duckdb_tileserver automatically
+# adds a trailing slash for you.
+# BasePath = "/"
+
+# String to return for Access-Control-Allow-Origin header
+CORSOrigins = "*"
+
+# set Debug to true to run in debug mode (can also be set on cmd-line)
+# Debug = true
+
+# Read html templates from this directory
+AssetsPath = "./assets"
+
+# Maximum duration for reading entire request (in seconds)
+ReadTimeoutSec = 5
+
+# Maximum duration for writing response (in seconds)
+# Also controls maximum time for processing request
+WriteTimeoutSec = 30
+
+# Disable HTML UI routes (default is false)
+# DisableUi = false
+
+[Database]
+# DuckDB database file path
+# DUCKDBTS_DATABASE_PATH environment variable takes precedence if set.
+# DatabasePath = "/path/to/your/database.db"
+
+# Publish only these tables as tile layers (default is to publish all tables with geometry columns)
+# TableIncludes = [ "buildings", "roads", "parcels" ]
+
+# Do not publish these tables as tile layers
+# TableExcludes = [ "temp_table", "staging_data" ]
+
+[Metadata]
+# Title for this service
+Title = "DuckDB Tileserver"
+# Description of this service
+Description = "MVT Tile Server powered by DuckDB Spatial"
+
+[Cache]
+# Enable in-memory LRU tile caching
+Enabled = true
+
+# Disable /cache routes (default is false)
+# DisableApi = false
+
+# API Key for /cache routes (disabled by default, /cache routes are public)
+# ApiKey = "abcdefg"
+
+# Maximum number of tiles to cache (server-side)
+# Each tile is typically 5-50KB, so:
+#   1,000 tiles ≈ 20 MB
+#  10,000 tiles ≈ 200 MB
+#  50,000 tiles ≈ 1 GB
+# 100,000 tiles ≈ 2 GB
+MaxItems = 10000
+
+# Maximum memory usage in MB (approximate limit)
+# Cache will evict oldest tiles when this limit is approached
+MaxMemoryMB = 1024
+
+# Browser cache max-age in seconds (client-side caching)
+# How long browsers should cache tiles before revalidating
+# Common values:
+#   3600   = 1 hour (good for frequently updated data)
+#   86400  = 1 day (good for daily updated data)
+#   604800 = 1 week (good for rarely updated data)
+#   0      = No browser caching (always revalidate)
+BrowserCacheMaxAge = 3600

@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>DuckDB Tileserver</title>
+    <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no">
+    <script src='https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js'></script>
+    <link href='https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css' rel='stylesheet' />
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        }
+        #map {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 100%;
+        }
+        #layer-control {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: white;
+            padding: 10px;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            max-width: 250px;
+            max-height: calc(100vh - 100px);
+            overflow-y: auto;
+            z-index: 1;
+        }
+        #layer-control h3 {
+            margin: 0 0 10px 0;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .layer-item {
+            margin-bottom: 8px;
+            padding: 8px;
+            border-radius: 3px;
+            background: #f8f9fa;
+        }
+        .layer-item label {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+            font-size: 13px;
+        }
+        .layer-item input[type="checkbox"] {
+            margin-right: 8px;
+        }
+        .layer-name {
+            font-weight: 500;
+        }
+        .layer-info {
+            font-size: 11px;
+            color: #666;
+            margin-top: 4px;
+            margin-left: 24px;
+        }
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: white;
+            padding: 10px 15px;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+            z-index: 1;
+        }
+        #info h2 {
+            margin: 0 0 5px 0;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        #info p {
+            margin: 0;
+            font-size: 12px;
+            color: #666;
+        }
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 20px 30px;
+            border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            z-index: 1000;
+        }
+    </style>
+</head>
+<body>
+<div id="loading" class="loading">Loading layers...</div>
+<div id="info">
+    <h2>DuckDB Tileserver</h2>
+    <p>MVT tiles powered by DuckDB Spatial</p>
+</div>
+<div id="layer-control" style="display: none;">
+    <h3>Layers</h3>
+    <div id="layer-list"></div>
+</div>
+<div id="map"></div>
+<script>
+    // Fetch available layers and initialize map
+    fetch('/layers')
+        .then(response => response.json())
+        .then(data => {
+            initMap(data.layers || []);
+        })
+        .catch(error => {
+            console.error('Error loading layers:', error);
+            document.getElementById('loading').innerHTML = 'Error loading layers';
+        });
+
+    function initMap(layers) {
+        // Hide loading indicator
+        document.getElementById('loading').style.display = 'none';
+
+        if (layers.length === 0) {
+            alert('No spatial layers found in the database');
+            return;
+        }
+
+        // Show layer control if we have layers
+        if (layers.length > 0) {
+            document.getElementById('layer-control').style.display = 'block';
+        }
+
+        // Determine initial map center and zoom
+        let center = [-74.0060, 40.7128]; // Default: New York
+        let zoom = 10;
+
+        // Use first layer's bounds if available
+        if (layers[0].bounds) {
+            const b = layers[0].bounds;
+            // Check that bounds has valid numeric values
+            if (typeof b.minx === 'number' && typeof b.maxx === 'number' &&
+                typeof b.miny === 'number' && typeof b.maxy === 'number' &&
+                !isNaN(b.minx) && !isNaN(b.maxx) &&
+                !isNaN(b.miny) && !isNaN(b.maxy)) {
+                center = [(b.minx + b.maxx) / 2, (b.miny + b.maxy) / 2];
+                // Calculate appropriate zoom level based on bounds
+                const latDiff = b.maxy - b.miny;
+                const lonDiff = b.maxx - b.minx;
+                const maxDiff = Math.max(latDiff, lonDiff);
+                if (maxDiff > 100) zoom = 2;
+                else if (maxDiff > 50) zoom = 4;
+                else if (maxDiff > 10) zoom = 6;
+                else if (maxDiff > 5) zoom = 8;
+                else if (maxDiff > 1) zoom = 10;
+                else zoom = 12;
+            }
+        }
+
+        // Build MapLibre style with layers
+        const sources = {};
+        const mapLayers = [];
+
+        // Add OSM basemap
+        sources['osm'] = {
+            type: 'raster',
+            tiles: [
+                'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                'https://b.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                'https://c.tile.openstreetmap.org/{z}/{x}/{y}.png'
+            ],
+            tileSize: 256,
+            attribution: '© OpenStreetMap contributors'
+        };
+
+        mapLayers.push({
+            id: 'background',
+            type: 'background',
+            paint: { 'background-color': '#a0c8f0' }
+        });
+
+        mapLayers.push({
+            id: 'osm',
+            type: 'raster',
+            source: 'osm',
+            minzoom: 0,
+            maxzoom: 19
+        });
+
+        // Add each layer as a vector tile source
+        layers.forEach((layer, index) => {
+            const sourceId = `layer-${layer.name}`;
+            sources[sourceId] = {
+                type: 'vector',
+                tiles: [`${window.location.origin}/tiles/${layer.name}/{z}/{x}/{y}.mvt`],
+                minzoom: 0,
+                maxzoom: 22
+            };
+
+            // Determine layer style based on geometry type
+            const geomType = (layer.geometry_type || '').toLowerCase();
+            const colors = ['#3388ff', '#ff6b6b', '#4ecdc4', '#45b7d1', '#f7b731', '#5f27cd', '#00d2d3', '#ff9ff3'];
+            const color = colors[index % colors.length];
+
+            if (geomType.includes('polygon') || geomType.includes('multipolygon')) {
+                // Polygon layers
+                mapLayers.push({
+                    id: `${layer.name}-fill`,
+                    type: 'fill',
+                    source: sourceId,
+                    'source-layer': layer.name,
+                    paint: {
+                        'fill-color': color,
+                        'fill-opacity': 0.6,
+                        'fill-outline-color': '#ffffff'
+                    }
+                });
+                mapLayers.push({
+                    id: `${layer.name}-stroke`,
+                    type: 'line',
+                    source: sourceId,
+                    'source-layer': layer.name,
+                    paint: {
+                        'line-color': '#000000',
+                        'line-width': 1
+                    }
+                });
+            } else if (geomType.includes('line') || geomType.includes('multilinestring')) {
+                // Line layers
+                mapLayers.push({
+                    id: `${layer.name}-line`,
+                    type: 'line',
+                    source: sourceId,
+                    'source-layer': layer.name,
+                    paint: {
+                        'line-color': color,
+                        'line-width': 2
+                    }
+                });
+            } else {
+                // Point layers (or unknown)
+                mapLayers.push({
+                    id: `${layer.name}-circle`,
+                    type: 'circle',
+                    source: sourceId,
+                    'source-layer': layer.name,
+                    paint: {
+                        'circle-color': color,
+                        'circle-radius': 6,
+                        'circle-stroke-color': '#ffffff',
+                        'circle-stroke-width': 2
+                    }
+                });
+            }
+        });
+
+        // Create the map
+        const map = new maplibregl.Map({
+            container: 'map',
+            style: {
+                version: 8,
+                sources: sources,
+                layers: mapLayers
+            },
+            center: center,
+            zoom: zoom
+        });
+
+        // Fit bounds if available (bounds are in EPSG:3857, need to convert to lng/lat)
+        if (layers[0] && layers[0].bounds) {
+            const b = layers[0].bounds;
+            // Note: API returns uppercase property names (Minx, Miny, Maxx, Maxy)
+            if (b.Minx && b.Maxx && b.Miny && b.Maxy) {
+                // Convert Web Mercator (EPSG:3857) bounds to WGS84 (EPSG:4326) lng/lat
+                const metersToLngLat = (x, y) => {
+                    const lng = (x / 20037508.34) * 180;
+                    let lat = (y / 20037508.34) * 180;
+                    lat = (Math.atan(Math.exp(lat * (Math.PI / 180))) * 360 / Math.PI) - 90;
+                    return [lng, lat];
+                };
+
+                const sw = metersToLngLat(b.Minx, b.Miny);
+                const ne = metersToLngLat(b.Maxx, b.Maxy);
+
+                map.fitBounds([sw, ne], { padding: 50 });
+            }
+        }
+
+        // Add navigation controls
+        map.addControl(new maplibregl.NavigationControl());
+        map.addControl(new maplibregl.ScaleControl());
+
+        // Add layer toggle controls
+        const layerList = document.getElementById('layer-list');
+        layers.forEach(layer => {
+            const item = document.createElement('div');
+            item.className = 'layer-item';
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.id = `toggle-${layer.name}`;
+            checkbox.checked = true;
+
+            const label = document.createElement('label');
+            label.htmlFor = `toggle-${layer.name}`;
+
+            const nameSpan = document.createElement('span');
+            nameSpan.className = 'layer-name';
+            nameSpan.textContent = layer.name;
+
+            label.appendChild(checkbox);
+            label.appendChild(nameSpan);
+            item.appendChild(label);
+
+            // Add layer info
+            if (layer.geometry_type) {
+                const info = document.createElement('div');
+                info.className = 'layer-info';
+                info.textContent = `${layer.geometry_type}`;
+                if (layer.properties && layer.properties.length > 0) {
+                    info.textContent += ` • ${layer.properties.length} properties`;
+                }
+                item.appendChild(info);
+            }
+
+            layerList.appendChild(item);
+
+            // Handle layer visibility toggle
+            checkbox.addEventListener('change', function() {
+                const visibility = this.checked ? 'visible' : 'none';
+                // Toggle all sub-layers for this layer
+                const layerIds = [
+                    `${layer.name}-fill`,
+                    `${layer.name}-stroke`,
+                    `${layer.name}-line`,
+                    `${layer.name}-circle`
+                ];
+                layerIds.forEach(id => {
+                    if (map.getLayer(id)) {
+                        map.setLayoutProperty(id, 'visibility', visibility);
+                    }
+                });
+            });
+        });
+
+        // Add click handlers to show feature properties
+        map.on('load', function() {
+            layers.forEach(layer => {
+                const layerIds = [
+                    `${layer.name}-fill`,
+                    `${layer.name}-line`,
+                    `${layer.name}-circle`
+                ];
+
+                layerIds.forEach(layerId => {
+                    if (!map.getLayer(layerId)) return;
+
+                    map.on('click', layerId, function(e) {
+                        if (e.features.length === 0) return;
+
+                        const coordinates = e.lngLat;
+                        const properties = e.features[0].properties;
+
+                        let popupContent = `<h3>${layer.name}</h3>`;
+                        const sortedProps = Object.keys(properties).sort();
+                        sortedProps.forEach(key => {
+                            if (key !== 'geometry') {
+                                popupContent += `<p><strong>${key}:</strong> ${properties[key]}</p>`;
+                            }
+                        });
+
+                        new maplibregl.Popup()
+                            .setLngLat(coordinates)
+                            .setHTML(popupContent)
+                            .addTo(map);
+                    });
+
+                    // Change cursor on hover
+                    map.on('mouseenter', layerId, function() {
+                        map.getCanvas().style.cursor = 'pointer';
+                    });
+
+                    map.on('mouseleave', layerId, function() {
+                        map.getCanvas().style.cursor = '';
+                    });
+                });
+            });
+        });
+    }
+</script>
+</body>
+</html>

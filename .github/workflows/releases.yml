@@ -1,0 +1,134 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: 1.24.x
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Test
+        run: make test
+
+  build:
+    name: Build
+    needs: test
+    # Only build on pushes to main or tags, not on PRs
+    if: github.event_name == 'push'
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            artifact_name: duckdb-tileserver
+            asset_name: duckdb-tileserver-linux-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+            artifact_name: duckdb-tileserver
+            asset_name: duckdb-tileserver-darwin-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            artifact_name: duckdb-tileserver
+            asset_name: duckdb-tileserver-darwin-arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            artifact_name: duckdb-tileserver.exe
+            asset_name: duckdb-tileserver-windows-amd64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: 1.24.x
+
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Get version
+        id: get_version
+        shell: bash
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION=${GITHUB_SHA::7}
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: make build
+
+      - name: Create archive
+        shell: bash
+        run: |
+          mkdir -p dist
+          VERSION="${{ steps.get_version.outputs.version }}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            FILENAME="dist/${{ matrix.asset_name }}-${VERSION}.zip"
+            7z a -tzip "$FILENAME" "${{ matrix.artifact_name }}" assets/ config/duckdb-tileserver.toml.example
+          else
+            FILENAME="dist/${{ matrix.asset_name }}-${VERSION}.tar.gz"
+            tar -czf "$FILENAME" "${{ matrix.artifact_name }}" assets/ config/duckdb-tileserver.toml.example
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/*
+          retention-days: 1
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+
+      - name: Display structure
+        run: ls -R dist/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/**/*.zip
+            dist/**/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

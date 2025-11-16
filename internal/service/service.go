@@ -1,0 +1,221 @@
+package service
+
+import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"time"
+
+	"github.com/gorilla/handlers"
+	"github.com/gorilla/mux"
+	log "github.com/sirupsen/logrus"
+	"github.com/tobilg/duckdb-tileserver/internal/cache"
+	"github.com/tobilg/duckdb-tileserver/internal/conf"
+	"github.com/tobilg/duckdb-tileserver/internal/data"
+)
+
+/*
+ Copyright 2019 - 2025 Crunchy Data Solutions, Inc.
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
+      http://www.apache.org/licenses/LICENSE-2.0
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+*/
+
+var catalogInstance data.Catalog
+var router *mux.Router
+var server *http.Server
+var isTLSEnabled bool
+var serverTLS *http.Server
+var serviceInstance *Service
+
+// Service holds references to persistent objects
+type Service struct {
+	cache *cache.TileCache
+}
+
+// logCacheStats periodically logs cache statistics
+func (s *Service) logCacheStats() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		if !s.cache.Enabled() {
+			return
+		}
+
+		stats := s.cache.Stats()
+		log.Infof("Cache stats: hits=%d misses=%d hit_rate=%.1f%% items=%d memory=%dMB evictions=%d",
+			stats.Hits,
+			stats.Misses,
+			stats.HitRate,
+			stats.Size,
+			stats.MemoryBytes/1024/1024,
+			stats.Evictions,
+		)
+	}
+}
+
+// Initialize sets the service state from configuration
+func Initialize() {
+	// No initialization needed for tileserver
+}
+
+func createServers() {
+	confServ := conf.Configuration.Server
+
+	bindAddress := fmt.Sprintf("%v:%v", confServ.HttpHost, confServ.HttpPort)
+	bindAddressTLS := fmt.Sprintf("%v:%v", confServ.HttpHost, confServ.HttpsPort)
+	// Use HTTPS only if server certificate and private key files specified
+	isTLSEnabled = conf.Configuration.IsTLSEnabled()
+
+	log.Infof("Serving HTTP at %s", formatBaseURL("http://", bindAddress, confServ.BasePath))
+	if isTLSEnabled {
+		log.Infof("Serving HTTPS at %s", formatBaseURL("https://", bindAddressTLS, confServ.BasePath))
+	}
+	log.Infof("CORS Allowed Origins: %v\n", conf.Configuration.Server.CORSOrigins)
+
+	router = initRouter(confServ.BasePath)
+
+	// writeTimeout is slighlty longer than request timeout to allow writing error response
+	timeoutSecRequest := conf.Configuration.Server.WriteTimeoutSec
+	timeoutSecWrite := timeoutSecRequest + 1
+
+	// ----  Handler chain  --------
+	// set CORS handling according to config
+	corsOpt := handlers.AllowedOrigins([]string{conf.Configuration.Server.CORSOrigins})
+	corsHeaders := handlers.AllowedHeaders([]string{"Content-Type", "Accept", "Authorization", "X-Requested-With", "X-API-Key"})
+	corsMethods := handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"})
+	corsHandler := handlers.CORS(corsOpt, corsHeaders, corsMethods)(router)
+	compressHandler := handlers.CompressHandler(corsHandler)
+
+	// Use a TimeoutHandler to ensure a request does not run past the WriteTimeout duration.
+	// This provides a context that allows cancellation to be propagated
+	// down to the database driver.
+	// If timeout expires, service returns 503 and a text message
+	timeoutHandler := http.TimeoutHandler(compressHandler,
+		time.Duration(timeoutSecRequest)*time.Second,
+		"Request timeout")
+
+	// more "production friendly" timeouts
+	// https://blog.simon-frey.eu/go-as-in-golang-standard-net-http-config-will-break-your-production/#You_should_at_least_do_this_The_easy_path
+	server = &http.Server{
+		ReadTimeout:  time.Duration(conf.Configuration.Server.ReadTimeoutSec) * time.Second,
+		WriteTimeout: time.Duration(timeoutSecWrite) * time.Second,
+		Addr:         bindAddress,
+		Handler:      timeoutHandler,
+	}
+
+	if isTLSEnabled {
+		serverTLS = &http.Server{
+			ReadTimeout:  time.Duration(conf.Configuration.Server.ReadTimeoutSec) * time.Second,
+			WriteTimeout: time.Duration(timeoutSecWrite) * time.Second,
+			Addr:         bindAddressTLS,
+			Handler:      timeoutHandler,
+			TLSConfig: &tls.Config{
+				MinVersion: tls.VersionTLS12, // Secure TLS versions only
+			},
+		}
+	}
+}
+
+// Serve starts the web service
+func Serve(catalog data.Catalog) {
+	confServ := conf.Configuration.Server
+	catalogInstance = catalog
+
+	// Initialize tile cache
+	var tileCache *cache.TileCache
+	if conf.Configuration.Cache.Enabled {
+		var err error
+		tileCache, err = cache.NewTileCache(
+			conf.Configuration.Cache.MaxItems,
+			conf.Configuration.Cache.MaxMemoryMB,
+		)
+		if err != nil {
+			log.Warnf("Failed to initialize cache: %v (continuing without cache)", err)
+			tileCache = cache.NewDisabledCache()
+		}
+	} else {
+		log.Info("Tile cache disabled by configuration")
+		tileCache = cache.NewDisabledCache()
+	}
+
+	// Create service instance
+	svc := &Service{
+		cache: tileCache,
+	}
+
+	// Start periodic stats logging
+	if tileCache.Enabled() {
+		go svc.logCacheStats()
+	}
+
+	// Store service instance globally for handlers to access
+	serviceInstance = svc
+
+	createServers()
+
+	log.Infof("====  Service: %s  ====\n", conf.Configuration.Metadata.Title)
+
+	// start http service
+	go func() {
+		// ListenAndServe returns http.ErrServerClosed when the server receives
+		// a call to Shutdown(). Other errors are unexpected.
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}()
+
+	// start https service
+	if isTLSEnabled {
+		go func() {
+			// ListenAndServe returns http.ErrServerClosed when the server receives
+			// a call to Shutdown(). Other errors are unexpected.
+			if err := serverTLS.ListenAndServeTLS(confServ.TlsServerCertificateFile, confServ.TlsServerPrivateKeyFile); err != nil && err != http.ErrServerClosed {
+				log.Fatal(err)
+			}
+		}()
+	}
+
+	// wait here for interrupt signal (^C)
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	<-sig
+
+	// Interrupt signal received:  Start shutting down
+	log.Infoln("Shutting down...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	errConn := server.Shutdown(ctx)
+	if errConn != nil {
+		log.Warnf("Server connection failed to shutdown: %v", errConn.Error())
+	}
+	if isTLSEnabled {
+		errConnTls := serverTLS.Shutdown(ctx)
+		if errConnTls != nil {
+			log.Warnf("Server TLS connection failed to shutdown: %v", errConnTls.Error())
+		}
+	}
+
+	// abort after waiting long enough for service to shutdown gracefully
+	// this terminates long-running DB queries, which otherwise block shutdown
+	abortTimeoutSec := conf.Configuration.Server.WriteTimeoutSec + 10
+	chanCancelFatal := FatalAfter(abortTimeoutSec, "Timeout on shutdown - aborting.")
+
+	log.Debugln("Closing DB connections")
+	catalogInstance.Close()
+
+	log.Infoln("Service stopped.")
+	// cancel the abort since it is not needed
+	close(chanCancelFatal)
+}

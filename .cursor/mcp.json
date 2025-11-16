@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "duckdb-go": {
+      "url": "https://gitmcp.io/duckdb/duckdb-go"
+    },
+    "duckdb-spatial": {
+      "url": "https://gitmcp.io/duckdb/duckdb-spatial"
+    }
+  }
+}

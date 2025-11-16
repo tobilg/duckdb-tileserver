@@ -1,0 +1,8 @@
+duckdb-tileserver
+duckdb-tileserver.exe
+launch.json
+docs/
+public/
+config/duckdb-tileserver.toml
+*.duckdb
+.playwright-mcp/
