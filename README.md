@@ -324,7 +324,7 @@ docker run --rm -dt \
 
 ```bash
 # Build the Docker image
-make APPVERSION=0.1.0 clean docker
+make APPVERSION=0.1.1 clean docker
 
 # Create sample database with spatial data
 duckdb tiles.db < testing/sample_data.sql
@@ -335,7 +335,7 @@ docker run --rm -dt \
   -e DUCKDBTS_DATABASE_PATH=/data/tiles.db \
   -p 9000:9000 \
   --name duckdb-tileserver \
-  tobilg/duckdb-tileserver:0.1.0
+  tobilg/duckdb-tileserver:0.1.1
 
 # View logs
 docker logs -f duckdb-tileserver
