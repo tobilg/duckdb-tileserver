@@ -6,6 +6,45 @@ Serves vector tiles directly from DuckDB databases using the new `ST_AsMVT` func
 
 For a complete list of implemented features, see [FEATURES.md](FEATURES.md).
 
+## Contents
+
+- [Features](#features)
+- [Download](#download)
+- [Preparing Your Database](#preparing-your-database)
+  - [Prerequisites](#prerequisites)
+  - [Basic Setup](#basic-setup)
+  - [Importing Data](#importing-data)
+  - [Setting the Spatial Reference System (SRID)](#setting-the-spatial-reference-system-srid)
+  - [Creating Spatial Indexes](#creating-spatial-indexes)
+  - [Validating Your Data](#validating-your-data)
+  - [Optimizing for Zoom Levels](#optimizing-for-zoom-levels)
+  - [Example: Complete Database Setup](#example-complete-database-setup)
+  - [Supported Geometry Types](#supported-geometry-types)
+  - [Tips](#tips)
+- [Quick Start](#quick-start)
+- [Build from Source](#build-from-source)
+  - [With Go installed](#with-go-installed)
+  - [Without Go (Docker build)](#without-go-docker-build)
+  - [Docker Image](#docker-image)
+- [Configuration](#configuration)
+  - [Configuration Using Environment Variables](#configuration-using-environment-variables)
+  - [SSL Configuration](#ssl-configuration)
+- [API Endpoints](#api-endpoints)
+  - [Tile Endpoints](#tile-endpoints)
+  - [Cache Management Endpoints](#cache-management-endpoints)
+  - [Example Requests](#example-requests)
+  - [Using with MapLibre GL JS](#using-with-maplibre-gl-js)
+- [Data Requirements](#data-requirements)
+- [Command-line Options](#command-line-options)
+- [Sample Data](#sample-data)
+- [Performance Tips](#performance-tips)
+- [Troubleshooting](#troubleshooting)
+  - [Enable Debug Logging](#enable-debug-logging)
+  - [Common Issues](#common-issues)
+- [Architecture](#architecture)
+- [License](#license)
+- [Credits](#credits)
+
 ## Features
 
 * **MVT Tile Server**: Serves Mapbox Vector Tiles (MVT/PBF) for all spatial tables
