@@ -130,29 +130,35 @@
             document.getElementById('layer-control').style.display = 'block';
         }
 
-        // Determine initial map center and zoom
-        let center = [-74.0060, 40.7128]; // Default: New York
-        let zoom = 10;
+        // Calculate initial map center and zoom from layer bounds if available
+        let center = [0, 0]; // Default: World center
+        let zoom = 2;
+        let hasBounds = false;
 
-        // Use first layer's bounds if available
-        if (layers[0].bounds) {
+        // Helper function to convert Web Mercator (EPSG:3857) to WGS84 (EPSG:4326)
+        // Returns [lng, lat] in degrees
+        const metersToLngLat = (x, y) => {
+            const lng = (x / 20037508.34) * 180;
+            const lat = (2 * Math.atan(Math.exp(y / 20037508.34 * Math.PI)) - Math.PI / 2) * (180 / Math.PI);
+            // x converts to longitude, y converts to latitude
+            // But our API has them swapped, so we return [lat, lng] which becomes [lng, lat] after the swap
+            return [lat, lng];
+        };
+
+        if (layers[0] && layers[0].bounds) {
             const b = layers[0].bounds;
-            // Check that bounds has valid numeric values
-            if (typeof b.minx === 'number' && typeof b.maxx === 'number' &&
-                typeof b.miny === 'number' && typeof b.maxy === 'number' &&
-                !isNaN(b.minx) && !isNaN(b.maxx) &&
-                !isNaN(b.miny) && !isNaN(b.maxy)) {
-                center = [(b.minx + b.maxx) / 2, (b.miny + b.maxy) / 2];
-                // Calculate appropriate zoom level based on bounds
-                const latDiff = b.maxy - b.miny;
-                const lonDiff = b.maxx - b.minx;
-                const maxDiff = Math.max(latDiff, lonDiff);
-                if (maxDiff > 100) zoom = 2;
-                else if (maxDiff > 50) zoom = 4;
-                else if (maxDiff > 10) zoom = 6;
-                else if (maxDiff > 5) zoom = 8;
-                else if (maxDiff > 1) zoom = 10;
-                else zoom = 12;
+            // API returns uppercase property names (Minx, Miny, Maxx, Maxy) in EPSG:3857
+            if (typeof b.Minx === 'number' && typeof b.Maxx === 'number' &&
+                typeof b.Miny === 'number' && typeof b.Maxy === 'number') {
+                // API returns Minx=longitude(meters), Miny=latitude(meters) in Web Mercator
+                // metersToLngLat expects (x=longitude_meters, y=latitude_meters)
+                const sw = metersToLngLat(b.Minx, b.Miny);
+                const ne = metersToLngLat(b.Maxx, b.Maxy);
+
+                // Calculate center
+                center = [(sw[0] + ne[0]) / 2, (sw[1] + ne[1]) / 2];
+
+                hasBounds = true;
             }
         }
 
@@ -265,26 +271,6 @@
             zoom: zoom
         });
 
-        // Fit bounds if available (bounds are in EPSG:3857, need to convert to lng/lat)
-        if (layers[0] && layers[0].bounds) {
-            const b = layers[0].bounds;
-            // Note: API returns uppercase property names (Minx, Miny, Maxx, Maxy)
-            if (b.Minx && b.Maxx && b.Miny && b.Maxy) {
-                // Convert Web Mercator (EPSG:3857) bounds to WGS84 (EPSG:4326) lng/lat
-                const metersToLngLat = (x, y) => {
-                    const lng = (x / 20037508.34) * 180;
-                    let lat = (y / 20037508.34) * 180;
-                    lat = (Math.atan(Math.exp(lat * (Math.PI / 180))) * 360 / Math.PI) - 90;
-                    return [lng, lat];
-                };
-
-                const sw = metersToLngLat(b.Minx, b.Miny);
-                const ne = metersToLngLat(b.Maxx, b.Maxy);
-
-                map.fitBounds([sw, ne], { padding: 50 });
-            }
-        }
-
         // Add navigation controls
         map.addControl(new maplibregl.NavigationControl());
         map.addControl(new maplibregl.ScaleControl());
@@ -342,8 +328,17 @@
             });
         });
 
-        // Add click handlers to show feature properties
+        // Wait for map to load before setting up interactions
         map.on('load', function() {
+            // Fine-tune bounds with fitBounds if available (for more precise positioning)
+            if (hasBounds && layers[0] && layers[0].bounds) {
+                const b = layers[0].bounds;
+                const sw = metersToLngLat(b.Minx, b.Miny);
+                const ne = metersToLngLat(b.Maxx, b.Maxy);
+                map.fitBounds([sw, ne], { padding: 50, animate: false });
+            }
+
+            // Add click handlers to show feature properties
             layers.forEach(layer => {
                 const layerIds = [
                     `${layer.name}-fill`,

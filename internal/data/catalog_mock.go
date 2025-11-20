@@ -248,7 +248,7 @@ func (cat *CatalogMock) FunctionFeatures(ctx context.Context, name string, args 
 	return nil, nil
 }
 
-func (cat *CatalogMock) FunctionData(ctx context.Context, name string, args map[string]string, param *QueryParam) ([]map[string]interface{}, error) {
+func (cat *CatalogMock) FunctionData(ctx context.Context, name string, args map[string]string, param *QueryParam) ([]map[string]any, error) {
 	// TODO:
 	return nil, nil
 }
@@ -299,20 +299,20 @@ func (fm *featureMock) toJSON(propNames []string) string {
 	return makeFeatureJSON(fm.ID, fm.Geom, props)
 }
 
-func (fm *featureMock) extractProperties(propNames []string) map[string]interface{} {
-	props := make(map[string]interface{})
+func (fm *featureMock) extractProperties(propNames []string) map[string]any {
+	props := make(map[string]any)
 	for _, name := range propNames {
 		val, err := fm.getProperty(name)
 		if err != nil {
 			// panic to avoid having to return error
-			panic(fmt.Errorf("Unknown property: %v", name))
+			panic(fmt.Errorf("unknown property: %v", name))
 		}
 		props[name] = val
 	}
 	return props
 }
 
-func (fm *featureMock) getProperty(name string) (interface{}, error) {
+func (fm *featureMock) getProperty(name string) (any, error) {
 	if name == "prop_a" {
 		return fm.PropA, nil
 	}
@@ -325,7 +325,7 @@ func (fm *featureMock) getProperty(name string) (interface{}, error) {
 	if name == "prop_d" {
 		return fm.PropD, nil
 	}
-	return nil, fmt.Errorf("Unknown property: %v", name)
+	return nil, fmt.Errorf("unknown property: %v", name)
 }
 
 func doFilter(features []*featureMock, filter []*PropertyFilter) []*featureMock {

@@ -182,9 +182,10 @@ func (cat *CatalogDB) enrichLayerMetadata(layer *Layer) error {
 
 	// Get native bounds - calculate extent ONCE to avoid expensive double table scan
 	// DuckDB Spatial doesn't store SRID per-geometry, so we detect it from coordinate ranges
+	// Use ST_Extent_Agg to aggregate all geometries into a single bounding box
 	nativeBoundsQuery := fmt.Sprintf(`
 		WITH extent_calc AS (
-			SELECT ST_Extent(%s) as extent
+			SELECT ST_Extent_Agg(%s) as extent
 			FROM %s
 			WHERE %s IS NOT NULL
 		)
@@ -194,10 +195,12 @@ func (cat *CatalogDB) enrichLayerMetadata(layer *Layer) error {
 			ST_XMax(extent) as maxx,
 			ST_YMax(extent) as maxy,
 			-- Also get transformed bounds in one query to avoid double table scan
-			ST_XMin(ST_Transform(extent, 'EPSG:4326', 'EPSG:3857')) as minx_3857,
-			ST_YMin(ST_Transform(extent, 'EPSG:4326', 'EPSG:3857')) as miny_3857,
-			ST_XMax(ST_Transform(extent, 'EPSG:4326', 'EPSG:3857')) as maxx_3857,
-			ST_YMax(ST_Transform(extent, 'EPSG:4326', 'EPSG:3857')) as maxy_3857
+			-- Note: ST_Transform swaps X and Y! So ST_XMin gives us the minimum Y value (latitude)
+			-- We swap them back so our API returns Minx=longitude, Miny=latitude
+			ST_YMin(ST_Transform(extent, 'EPSG:4326', 'EPSG:3857')) as minx_3857,
+			ST_XMin(ST_Transform(extent, 'EPSG:4326', 'EPSG:3857')) as miny_3857,
+			ST_YMax(ST_Transform(extent, 'EPSG:4326', 'EPSG:3857')) as maxx_3857,
+			ST_XMax(ST_Transform(extent, 'EPSG:4326', 'EPSG:3857')) as maxy_3857
 		FROM extent_calc
 	`, layer.GeometryColumn, layer.Table, layer.GeometryColumn)
 
@@ -227,11 +230,13 @@ func (cat *CatalogDB) enrichLayerMetadata(layer *Layer) error {
 	// If data is already in 3857, use native bounds; otherwise use transformed bounds
 	var minx, miny, maxx, maxy sql.NullFloat64
 	if sourceSrid == SRID_3857 {
-		// Already in Web Mercator, use native bounds
-		minx, miny, maxx, maxy = nativeMinx, nativeMiny, nativeMaxx, nativeMaxy
+		// Already in Web Mercator - DuckDB ST_Extent returns swapped coordinates for EPSG:3857
+		// ST_XMin/ST_YMin are swapped, so we swap them to get correct longitude/latitude order
+		minx, miny, maxx, maxy = nativeMiny, nativeMinx, nativeMaxy, nativeMaxx
 	} else {
-		// Use pre-calculated transformed bounds
-		minx, miny, maxx, maxy = minx3857, miny3857, maxx3857, maxy3857
+		// Data is in EPSG:4326, use transformed bounds
+		// The SQL query swapped them (lines 199-202), so we need to swap back
+		minx, miny, maxx, maxy = miny3857, minx3857, maxy3857, maxx3857
 	}
 
 	if minx.Valid && miny.Valid && maxx.Valid && maxy.Valid {
@@ -440,29 +445,56 @@ func (cat *CatalogDB) GenerateTile(ctx context.Context, layerName string, z, x, 
 				propertyColumns += ", "
 			}
 
-			// Check if type needs casting
+			// Check if type needs casting for MVT compatibility
+			// MVT spec only supports: VARCHAR, BOOLEAN, INTEGER, BIGINT, FLOAT, DOUBLE
 			dataType := layer.PropertyTypes[prop]
 			needsCast := false
+			castToDouble := false
 
-			// DECIMAL types need to be cast to DOUBLE
-			if len(dataType) >= 7 && dataType[:7] == "DECIMAL" {
-				needsCast = true
+			// Check for complex/composite types (need VARCHAR cast)
+			// Use strings.HasPrefix to properly detect type prefixes
+			if len(dataType) >= 3 {
+				if dataType[:3] == "MAP" || dataType[:3] == "map" {
+					needsCast = true
+				} else if len(dataType) >= 4 && (dataType[:4] == "LIST" || dataType[:4] == "list") {
+					needsCast = true
+				} else if len(dataType) >= 5 && (dataType[:5] == "ARRAY" || dataType[:5] == "array") {
+					needsCast = true
+				} else if len(dataType) >= 5 && (dataType[:5] == "UNION" || dataType[:5] == "union") {
+					needsCast = true
+				} else if len(dataType) >= 6 && (dataType[:6] == "STRUCT" || dataType[:6] == "struct") {
+					needsCast = true
+				}
 			}
-			// Add other unsupported types here if needed
-			// Examples: TIMESTAMP, DATE, TIME, UUID, etc.
+
+			// Check for DECIMAL/NUMERIC (need DOUBLE cast for precision)
+			if len(dataType) >= 7 && (dataType[:7] == "DECIMAL" || dataType[:7] == "NUMERIC") {
+				needsCast = true
+				castToDouble = true
+			}
+
+			// Check specific unsupported types
 			switch dataType {
-			case "TIMESTAMP", "DATE", "TIME", "UUID", "BLOB":
+			// Temporal types
+			case "DATE", "TIME", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMPTZ", "INTERVAL":
+				needsCast = true
+			// Binary/Special types
+			case "BLOB", "BIT", "UUID", "JSON":
+				needsCast = true
+			// Large numeric types
+			case "HUGEINT":
 				needsCast = true
 			}
 
 			if needsCast {
-				// Cast to DOUBLE for numeric types, VARCHAR for others
-				if dataType[:7] == "DECIMAL" {
+				// Cast to DOUBLE for DECIMAL/NUMERIC, VARCHAR for all others
+				if castToDouble {
 					propertyColumns += fmt.Sprintf("CAST(%s AS DOUBLE) as %s", prop, prop)
 				} else {
 					propertyColumns += fmt.Sprintf("CAST(%s AS VARCHAR) as %s", prop, prop)
 				}
 			} else {
+				// Type is MVT-compatible, use as-is
 				propertyColumns += prop
 			}
 		}
@@ -502,7 +534,16 @@ func (cat *CatalogDB) GenerateTile(ctx context.Context, layerName string, z, x, 
 	}
 
 	// Return empty tile if no data
-	if tileData == nil {
+	// ST_AsMVT returns NULL or minimal MVT when there are no features
+	if len(tileData) == 0 {
+		return []byte{}, nil
+	}
+
+	// Some MVT clients can't parse very small MVT blobs (< 10 bytes)
+	// These are typically empty layers with minimal structure
+	// Return empty to trigger 204 No Content response
+	if len(tileData) < 10 {
+		log.Debugf("Tile data too small (%d bytes), treating as empty", len(tileData))
 		return []byte{}, nil
 	}
 

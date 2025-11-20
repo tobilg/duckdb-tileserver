@@ -50,7 +50,7 @@ type CatalogDB struct {
 
 var isStartup bool
 var isFunctionsLoaded bool
-var instanceDB CatalogDB
+var instanceDB *CatalogDB
 
 const fmtQueryStats = "Database query result: %v rows in %v"
 
@@ -61,14 +61,16 @@ func init() {
 // CatDBInstance tbd
 func CatDBInstance() Catalog {
 	// TODO: make a singleton
-	instanceDB = newCatalogDB()
-	return &instanceDB
+	if instanceDB == nil {
+		instanceDB = newCatalogDB()
+	}
+	return instanceDB
 }
 
-func newCatalogDB() CatalogDB {
+func newCatalogDB() *CatalogDB {
 	dbPath := conf.Configuration.Database.DatabasePath
 	conn := dbConnect()
-	cat := CatalogDB{
+	cat := &CatalogDB{
 		dbconn:             conn,
 		dbPath:             dbPath,
 		layerMetadataCache: make(map[string]*Layer),
