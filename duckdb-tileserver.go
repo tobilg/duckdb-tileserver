@@ -55,7 +55,6 @@ func initCommnandOptions() {
 	getopt.FlagLong(&flagTestModeOn, "test", 't', "Serve mock data for testing")
 	getopt.FlagLong(&flagVersion, "version", 'v', "Output the version information")
 	getopt.FlagLong(&flagDuckDBPath, "database-path", 0, "", "Path to DuckDB database file")
-
 	getopt.FlagLong(&flagDisableUi, "disable-ui", 0, "Disable HTML UI routes")
 }
 
