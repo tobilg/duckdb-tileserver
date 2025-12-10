@@ -1,6 +1,6 @@
 package conf
 
-var setVersion string = "0.1.3"
+var setVersion string = "0.1.4"
 
 // AppConfiguration is the set of global application configuration constants.
 type AppConfiguration struct {
